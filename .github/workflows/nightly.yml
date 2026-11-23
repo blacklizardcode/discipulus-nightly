@@ -1,9 +1,9 @@
 name: Build Discipulus Nightly
 
 on:
-  # The upstream repository cannot trigger events in this repository, so poll it.
+  # Check upstream main once a day. Platform builds only run for unseen commits.
   schedule:
-    - cron: '17 * * * *'
+    - cron: '17 5 * * *'
   workflow_dispatch:
 
 permissions:
@@ -107,7 +107,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.8'
           cache: true
 
       - name: Install Linux build dependencies
@@ -124,7 +124,20 @@ jobs:
           set -euo pipefail
           cd source
           flutter config --no-analytics --enable-linux-desktop
-          flutter pub get
+          # The lockfile can pin home_widget to a revision containing generated
+          # machine-specific Linux plugin symlinks. Upgrade only this git dependency
+          # so Pub resolves the latest home_widget main commit, which removes them.
+          flutter pub upgrade home_widget
+          home_widget_ref="$(awk '
+            /^  home_widget:$/ { in_package=1; next }
+            in_package && /^  [a-zA-Z0-9_]+:$/ { exit }
+            in_package && /resolved-ref:/ { gsub(/[\" ]/, "", $2); print $2; exit }
+          ' pubspec.lock)"
+          echo "Resolved home_widget git revision: ${home_widget_ref}"
+          if [[ ! "${home_widget_ref}" =~ ^[a-f0-9]{40}$ || "${home_widget_ref}" == '8d51d6b728bbfe26c8fc904f5437a5ec44fce6c4' ]]; then
+            echo 'home_widget is still pinned to the known broken revision; refusing to build.' >&2
+            exit 1
+          fi
           flutter build linux --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
           test -d build/linux/x64/release/bundle
           mkdir -p "$RUNNER_TEMP/release-assets"
@@ -157,7 +170,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.8'
           cache: true
 
       - name: Build Windows release bundle
@@ -170,7 +183,20 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Set-Location source
           flutter config --no-analytics --enable-windows-desktop
-          flutter pub get
+          # The lockfile can pin home_widget to a revision containing generated
+          # machine-specific Linux plugin symlinks. Upgrade only this git dependency
+          # so Pub resolves the latest home_widget main commit, which removes them.
+          flutter pub upgrade home_widget
+          home_widget_ref="$(awk '
+            /^  home_widget:$/ { in_package=1; next }
+            in_package && /^  [a-zA-Z0-9_]+:$/ { exit }
+            in_package && /resolved-ref:/ { gsub(/[\" ]/, "", $2); print $2; exit }
+          ' pubspec.lock)"
+          echo "Resolved home_widget git revision: ${home_widget_ref}"
+          if [[ ! "${home_widget_ref}" =~ ^[a-f0-9]{40}$ || "${home_widget_ref}" == '8d51d6b728bbfe26c8fc904f5437a5ec44fce6c4' ]]; then
+            echo 'home_widget is still pinned to the known broken revision; refusing to build.' >&2
+            exit 1
+          fi
           flutter build windows --release --build-name "$env:VERSION_NAME" --build-number "$env:BUILD_NUMBER"
 
           $bundle = 'build/windows/x64/runner/Release'
@@ -205,7 +231,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.8'
           cache: true
 
       - name: Build macOS release app
@@ -217,7 +243,20 @@ jobs:
           set -euo pipefail
           cd source
           flutter config --no-analytics --enable-macos-desktop
-          flutter pub get
+          # The lockfile can pin home_widget to a revision containing generated
+          # machine-specific Linux plugin symlinks. Upgrade only this git dependency
+          # so Pub resolves the latest home_widget main commit, which removes them.
+          flutter pub upgrade home_widget
+          home_widget_ref="$(awk '
+            /^  home_widget:$/ { in_package=1; next }
+            in_package && /^  [a-zA-Z0-9_]+:$/ { exit }
+            in_package && /resolved-ref:/ { gsub(/[\" ]/, "", $2); print $2; exit }
+          ' pubspec.lock)"
+          echo "Resolved home_widget git revision: ${home_widget_ref}"
+          if [[ ! "${home_widget_ref}" =~ ^[a-f0-9]{40}$ || "${home_widget_ref}" == '8d51d6b728bbfe26c8fc904f5437a5ec44fce6c4' ]]; then
+            echo 'home_widget is still pinned to the known broken revision; refusing to build.' >&2
+            exit 1
+          fi
           flutter build macos --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
 
           app='build/macos/Build/Products/Release/Discipulus.app'
@@ -282,7 +321,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.8'
           cache: true
 
       - name: Install Android signing keystore
@@ -299,7 +338,20 @@ jobs:
           set -euo pipefail
           cd source
           flutter config --no-analytics
-          flutter pub get
+          # The lockfile can pin home_widget to a revision containing generated
+          # machine-specific Linux plugin symlinks. Upgrade only this git dependency
+          # so Pub resolves the latest home_widget main commit, which removes them.
+          flutter pub upgrade home_widget
+          home_widget_ref="$(awk '
+            /^  home_widget:$/ { in_package=1; next }
+            in_package && /^  [a-zA-Z0-9_]+:$/ { exit }
+            in_package && /resolved-ref:/ { gsub(/[\" ]/, "", $2); print $2; exit }
+          ' pubspec.lock)"
+          echo "Resolved home_widget git revision: ${home_widget_ref}"
+          if [[ ! "${home_widget_ref}" =~ ^[a-f0-9]{40}$ || "${home_widget_ref}" == '8d51d6b728bbfe26c8fc904f5437a5ec44fce6c4' ]]; then
+            echo 'home_widget is still pinned to the known broken revision; refusing to build.' >&2
+            exit 1
+          fi
 
           flutter build apk --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
           flutter build appbundle --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
