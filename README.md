@@ -31,7 +31,7 @@ Open **[Releases](https://github.com/blacklizardcode/discipulus-nightly/releases
 | Android phone / tablet | `Discipulus-android-phone-…aab` | Android App Bundle; mainly for Play distribution workflows |
 | Wear OS | `Discipulus-wearos-…apk` | Separate Wear OS companion package |
 | Windows | `Discipulus-windows-…zip` | Extract the complete folder and run `Discipulus.exe` |
-| Linux | `Discipulus-linux-…tar.gz` | Extract the archive; the executable and runtime files are in `bundle/` |
+| Linux | `Discipulus-linux-…tar.gz` | Extract the archive; the executable and runtime files are in `bundle/`. The build requires GTK 3 and GStreamer. |
 | macOS | `Discipulus-macos-…zip` | Extract `Discipulus.app`; unsigned and not notarized |
 | iOS + watchOS | `Discipulus-ios-watchos-unsigned-…xcarchive.zip` | Unsigned Xcode archive; the Apple Watch app is embedded in this archive |
 
@@ -70,7 +70,10 @@ Copy the base64 output into `ANDROID_KEYSTORE_BASE64`. Add the other three value
 ## Build configuration and dependency fix
 
 - **Flutter:** every platform job uses Flutter **3.47.8**.
-- **`home_widget`:** the upstream lockfile can pin an older Git revision containing generated Linux plugin symlinks with absolute paths from a developer's machine. Before each platform build, the workflow runs `flutter pub upgrade home_widget`, refreshing only this direct Git dependency to the latest default-branch commit. The current upstream fix removes the committed `flutter/ephemeral` symlinks and ignores that generated directory.
+- **`home_widget`:** the upstream lockfile can pin an older Git revision containing generated Linux plugin symlinks with absolute paths from a developer's machine. Before each platform build, the workflow runs `flutter pub upgrade home_widget`, refreshing only this direct Git dependency to the latest default-branch commit. Upstream commit [`ff71e5d`](https://github.com/DiscipulusApp/home_widget/commit/ff71e5d554dd0b590752e91d4a5ce15b2e295919) removes the committed `flutter/ephemeral` symlinks and ignores that generated directory.
+- **Linux dependencies:** the Linux runner installs GTK 3 and the GStreamer development packages required by `audioplayers_linux`.
+- **Windows shell:** dependency resolution uses PowerShell-compatible commands; no Bash-only lockfile parsing is run in the Windows job.
+- **macOS signing:** the macOS app is built with Xcode code signing disabled through Flutter's `FLUTTER_XCODE_*` build-setting environment variables. This avoids requiring a developer provisioning profile for an unofficial unsigned build.
 - **Cache:** the Flutter/Pub cache remains enabled for faster builds. The explicit dependency upgrade refreshes the Git package instead of continuing to use the old lockfile revision.
 
 ## How the workflow works
