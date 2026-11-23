@@ -1,0 +1,401 @@
+name: Build Discipulus Nightly
+
+on:
+  # The upstream repository cannot trigger events in this repository, so poll it.
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discipulus-nightly-upstream
+  cancel-in-progress: false
+
+jobs:
+  check-upstream:
+    name: Check for a new upstream commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_build: ${{ steps.detect.outputs.should_build }}
+      upstream_sha: ${{ steps.detect.outputs.upstream_sha }}
+      short_sha: ${{ steps.detect.outputs.short_sha }}
+      tag: ${{ steps.detect.outputs.tag }}
+      version_name: ${{ steps.detect.outputs.version_name }}
+      version_full: ${{ steps.detect.outputs.version_full }}
+      build_number: ${{ steps.detect.outputs.build_number }}
+    steps:
+      - name: Detect latest upstream revision
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upstream_repo='DiscipulusApp/Discipulus'
+          upstream_branch='main'
+          upstream_sha="$(git ls-remote "https://github.com/${upstream_repo}.git" "refs/heads/${upstream_branch}" | awk 'NR == 1 { print $1 }')"
+
+          if [[ ! "$upstream_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Could not resolve the upstream main branch.' >&2
+            exit 1
+          fi
+
+          pubspec_url="https://raw.githubusercontent.com/${upstream_repo}/${upstream_sha}/pubspec.yaml"
+          version_full="$(curl --fail --silent --show-error --location "$pubspec_url" | sed -n 's/^version:[[:space:]]*//p' | head -n 1 | tr -d "\"'")"
+          if [[ -z "$version_full" ]]; then
+            echo 'Could not read the version from upstream pubspec.yaml.' >&2
+            exit 1
+          fi
+
+          version_name="${version_full%%+*}"
+          base_build='0'
+          if [[ "$version_full" == *+* ]]; then
+            base_build="${version_full##*+}"
+          fi
+          if [[ ! "$base_build" =~ ^[0-9]+$ ]]; then
+            base_build='0'
+          fi
+
+          # Keep Android versionCode increasing even when upstream does not bump pubspec.yaml.
+          build_number=$((base_build + GITHUB_RUN_NUMBER))
+          if (( build_number > 2100000000 )); then
+            echo "Calculated Android build number exceeds Google's versionCode limit: ${build_number}" >&2
+            exit 1
+          fi
+
+          short_sha="${upstream_sha:0:12}"
+          tag="upstream-${short_sha}"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            should_build='false'
+            echo "A release already exists for upstream commit ${short_sha}; skipping."
+          else
+            should_build='true'
+            echo "New upstream commit ${short_sha}; starting platform builds."
+          fi
+
+          {
+            echo "upstream_sha=${upstream_sha}"
+            echo "short_sha=${short_sha}"
+            echo "tag=${tag}"
+            echo "version_name=${version_name}"
+            echo "version_full=${version_full}"
+            echo "build_number=${build_number}"
+            echo "should_build=${should_build}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-24.04
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    steps:
+      - name: Check out upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: DiscipulusApp/Discipulus
+          ref: ${{ needs.check-upstream.outputs.upstream_sha }}
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+
+      - name: Build Linux release bundle
+        env:
+          VERSION_NAME: ${{ needs.check-upstream.outputs.version_name }}
+          BUILD_NUMBER: ${{ needs.check-upstream.outputs.build_number }}
+          SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          cd source
+          flutter config --no-analytics --enable-linux-desktop
+          flutter pub get
+          flutter build linux --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
+          test -d build/linux/x64/release/bundle
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          tar -czf "$RUNNER_TEMP/release-assets/Discipulus-linux-${VERSION_NAME}-${BUILD_NUMBER}-${SHORT_SHA}.tar.gz" \
+            -C build/linux/x64/release bundle
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-build
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 2
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-2022
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    steps:
+      - name: Check out upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: DiscipulusApp/Discipulus
+          ref: ${{ needs.check-upstream.outputs.upstream_sha }}
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build Windows release bundle
+        env:
+          VERSION_NAME: ${{ needs.check-upstream.outputs.version_name }}
+          BUILD_NUMBER: ${{ needs.check-upstream.outputs.build_number }}
+          SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location source
+          flutter config --no-analytics --enable-windows-desktop
+          flutter pub get
+          flutter build windows --release --build-name "$env:VERSION_NAME" --build-number "$env:BUILD_NUMBER"
+
+          $bundle = 'build/windows/x64/runner/Release'
+          if (-not (Test-Path $bundle)) { throw "Windows build output not found: $bundle" }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/release-assets" | Out-Null
+          $archive = "$env:RUNNER_TEMP/release-assets/Discipulus-windows-$($env:VERSION_NAME)-$($env:BUILD_NUMBER)-$($env:SHORT_SHA).zip"
+          Compress-Archive -Path "$bundle/*" -DestinationPath $archive -CompressionLevel Optimal -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-build
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 2
+
+  build-apple:
+    name: Build macOS, iOS and watchOS
+    runs-on: macos-latest
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    steps:
+      - name: Check out upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: DiscipulusApp/Discipulus
+          ref: ${{ needs.check-upstream.outputs.upstream_sha }}
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build macOS release app
+        env:
+          VERSION_NAME: ${{ needs.check-upstream.outputs.version_name }}
+          BUILD_NUMBER: ${{ needs.check-upstream.outputs.build_number }}
+          SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          cd source
+          flutter config --no-analytics --enable-macos-desktop
+          flutter pub get
+          flutter build macos --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
+
+          app='build/macos/Build/Products/Release/Discipulus.app'
+          test -d "$app"
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "$RUNNER_TEMP/release-assets/Discipulus-macos-${VERSION_NAME}-${BUILD_NUMBER}-${SHORT_SHA}.zip"
+
+      - name: Build unsigned iOS and embedded watchOS archive
+        env:
+          VERSION_NAME: ${{ needs.check-upstream.outputs.version_name }}
+          BUILD_NUMBER: ${{ needs.check-upstream.outputs.build_number }}
+          SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          cd source
+          flutter build ipa --release --no-codesign --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
+
+          # The upstream Runner Xcode target embeds its WatchApp and watchOS widget extension.
+          archive="$(find build/ios/archive -maxdepth 1 -type d -name '*.xcarchive' -print -quit)"
+          if [[ -z "$archive" ]]; then
+            echo 'No iOS Xcode archive was produced.' >&2
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$archive" \
+            "$RUNNER_TEMP/release-assets/Discipulus-ios-watchos-unsigned-${VERSION_NAME}-${BUILD_NUMBER}-${SHORT_SHA}.xcarchive.zip"
+
+      - name: Upload Apple artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: apple-builds
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 2
+
+  build-android:
+    name: Build Android and Wear OS
+    runs-on: ubuntu-24.04
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    env:
+      VERSION_NAME: ${{ needs.check-upstream.outputs.version_name }}
+      BUILD_NUMBER: ${{ needs.check-upstream.outputs.build_number }}
+      SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      CM_KEYSTORE_PASSWORD: ${{ secrets.CM_KEYSTORE_PASSWORD }}
+      CM_KEY_ALIAS: ${{ secrets.CM_KEY_ALIAS }}
+      CM_KEY_PASSWORD: ${{ secrets.CM_KEY_PASSWORD }}
+      CM_KEYSTORE_PATH: ${{ github.workspace }}/source/android/app/keystore.jks
+      # The upstream Gradle files use CI=true to select the provided keystore.
+      CI: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.CM_KEYSTORE_PASSWORD != '' && secrets.CM_KEY_ALIAS != '' && secrets.CM_KEY_PASSWORD != '' && 'true' || 'false' }}
+    steps:
+      - name: Check out upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: DiscipulusApp/Discipulus
+          ref: ${{ needs.check-upstream.outputs.upstream_sha }}
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Android signing keystore
+        if: env.CI == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$CM_KEYSTORE_PATH")"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$CM_KEYSTORE_PATH"
+
+      - name: Build Android phone APK and AAB, plus Wear OS APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source
+          flutter config --no-analytics
+          flutter pub get
+
+          flutter build apk --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
+          flutter build appbundle --release --build-name "$VERSION_NAME" --build-number "$BUILD_NUMBER"
+
+          cd android
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :wear:assembleRelease \
+            -PwearVersionCode="$BUILD_NUMBER" \
+            -PversionCode="$BUILD_NUMBER" \
+            -PversionName="$VERSION_NAME"
+          cd ..
+
+          phone_apk='build/app/outputs/flutter-apk/app-release.apk'
+          phone_aab='build/app/outputs/bundle/release/app-release.aab'
+          test -f "$phone_apk"
+          test -f "$phone_aab"
+
+          wear_apk="$(find .. -type f -path '*/wear/outputs/apk/release/*.apk' -print -quit)"
+          if [[ -z "$wear_apk" ]]; then
+            echo 'Wear OS APK was not found after the Gradle build.' >&2
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          cp "$phone_apk" "$RUNNER_TEMP/release-assets/Discipulus-android-phone-${VERSION_NAME}-${BUILD_NUMBER}-${SHORT_SHA}.apk"
+          cp "$phone_aab" "$RUNNER_TEMP/release-assets/Discipulus-android-phone-${VERSION_NAME}-${BUILD_NUMBER}-${SHORT_SHA}.aab"
+          cp "$wear_apk" "$RUNNER_TEMP/release-assets/Discipulus-wearos-${VERSION_NAME}-${BUILD_NUMBER}-${SHORT_SHA}.apk"
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-builds
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 2
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - check-upstream
+      - build-linux
+      - build-windows
+      - build-apple
+      - build-android
+    if: needs.check-upstream.outputs.should_build == 'true'
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+      SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
+      RELEASE_TAG: ${{ needs.check-upstream.outputs.tag }}
+      VERSION_NAME: ${{ needs.check-upstream.outputs.version_name }}
+      VERSION_FULL: ${{ needs.check-upstream.outputs.version_full }}
+      BUILD_NUMBER: ${{ needs.check-upstream.outputs.build_number }}
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<EOF
+          ## Discipulus Nightly ${VERSION_NAME}
+
+          Automated build of upstream commit [\`${SHORT_SHA}\`](https://github.com/DiscipulusApp/Discipulus/commit/${UPSTREAM_SHA}).
+
+          - Upstream version: \`${VERSION_FULL}\`
+          - CI build number: \`${BUILD_NUMBER}\`
+          - Source: https://github.com/DiscipulusApp/Discipulus
+
+          ### Important platform notes
+
+          - **iOS / watchOS:** the attached Xcode archive is unsigned. The Apple Watch app is embedded in the iOS project archive. Apple signing credentials are not configured by default, so this is not an install-ready IPA or TestFlight upload.
+          - **macOS:** the app bundle is unsigned and not notarized.
+          - **Android:** the phone APK and Wear OS APK are separate assets. For repeatable in-place Android updates, configure the Android signing secrets described in the repository README.
+
+          These are unofficial builds. Discipulus is developed upstream; this repository only automates builds of the upstream source.
+          EOF
+
+      - name: Publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if (( ${#assets[@]} == 0 )); then
+            echo 'No build artifacts were downloaded.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Discipulus Nightly ${VERSION_NAME} (build ${BUILD_NUMBER})" \
+            --notes-file release-notes.md

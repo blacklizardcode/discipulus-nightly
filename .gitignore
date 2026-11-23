@@ -1,0 +1,13 @@
+# Local editor / OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Signing material — never commit private keys
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+key.properties
+local.properties
