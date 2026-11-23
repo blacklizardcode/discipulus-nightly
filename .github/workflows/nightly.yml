@@ -226,6 +226,10 @@ jobs:
         run: |
           set -euo pipefail
           cd source
+          # Flutter 3.44+ enables SwiftPM by default. google_mobile_ads currently
+          # needs CocoaPods while depending on webview_flutter_wkwebview, which
+          # would otherwise be resolved through SwiftPM. Keep Apple plugins on CocoaPods.
+          flutter config --no-enable-swift-package-manager
           flutter config --no-analytics --enable-macos-desktop
           # The lockfile can pin home_widget to a revision containing generated
           # machine-specific Linux plugin symlinks. Upgrade only this git dependency
