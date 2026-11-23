@@ -1,1 +1,1 @@
-Unofficial hourly CI builds of the latest Discipulus commit for Android, Wear OS, Windows, Linux and Apple platforms, published as GitHub Releases.
+Unofficial daily CI builds of the latest Discipulus commit for Android, Wear OS, Windows, Linux and Apple platforms, published as GitHub Releases.
