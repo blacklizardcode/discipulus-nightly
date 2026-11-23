@@ -17,17 +17,9 @@
 
 This repository automatically builds the newest commit on `DiscipulusApp/Discipulus` and publishes the resulting platform packages as a GitHub Release. It does not modify the upstream application source.
 
-The workflow checks upstream **once per hour**. A new release is created only when the upstream `main` branch has a commit that has not already been built. You can also start a check manually from the **Actions** tab.
+The workflow checks upstream **once per day at 05:17 UTC**. The lightweight check compares the latest `main` commit with the commit recorded in existing nightly releases. If there is no new commit, all platform build jobs are skipped and no build artifacts are produced. If `main` has advanced, it builds that newest commit. Multiple upstream commits between checks are coalesced into one build. You can also start the same check manually from the **Actions** tab.
 
 > This is an unofficial build service. It is not operated by, endorsed by, or affiliated with the Discipulus developers or Iddink Group. For the original project, issues and official releases, visit [DiscipulusApp/Discipulus](https://github.com/DiscipulusApp/Discipulus).
-
-## Create the GitHub repository
-
-Create a **public, empty** repository named `discipulus-nightly` under the `blacklizardcode` account. Use the description below, then upload the contents of this starter kit to the repository root (including the hidden `.github` directory). Do not initialize the new repository with another README or license, because this kit already includes its README.
-
-> Unofficial hourly CI builds of the latest Discipulus commit for Android, Wear OS, Windows, Linux and Apple platforms, published as GitHub Releases.
-
-The workflow needs GitHub Actions enabled and requests `contents: write` only in the release-publishing job so it can create GitHub Releases.
 
 ## Downloads
 
@@ -75,13 +67,19 @@ base64 -w 0 discipulus-nightly.jks
 
 Copy the base64 output into `ANDROID_KEYSTORE_BASE64`. Add the other three values using **Settings → Secrets and variables → Actions → New repository secret**. Keep a secure backup of the keystore: losing it means you will not be able to sign updates with the same key. Never commit the keystore or its passwords to the repository.
 
+## Build configuration and dependency fix
+
+- **Flutter:** every platform job uses Flutter **3.47.8**.
+- **`home_widget`:** the upstream lockfile can pin an older Git revision containing generated Linux plugin symlinks with absolute paths from a developer's machine. Before each platform build, the workflow runs `flutter pub upgrade home_widget`, refreshing only this direct Git dependency to the latest default-branch commit. The current upstream fix removes the committed `flutter/ephemeral` symlinks and ignores that generated directory.
+- **Cache:** the Flutter/Pub cache remains enabled for faster builds. The explicit dependency upgrade refreshes the Git package instead of continuing to use the old lockfile revision.
+
 ## How the workflow works
 
-1. Reads the latest commit SHA from upstream `main`.
-2. Checks whether a release for that exact SHA already exists here.
-3. Checks out the upstream source at that immutable SHA, including its submodules.
-4. Builds the supported platforms on the appropriate GitHub-hosted runners.
-5. Publishes all successful build artifacts together in one GitHub Release.
+1. Runs a lightweight check against the latest upstream `main` commit once per day (or when manually started).
+2. Checks whether a release for that exact commit already exists here.
+3. If it exists, all platform build jobs are skipped.
+4. If it does not exist, checks out that immutable commit, including its submodules, and builds the supported platforms.
+5. Publishes the build artifacts together in one GitHub Release.
 
 ### Apple signing limitations
 
